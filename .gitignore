@@ -1,0 +1,15 @@
+# Ignorar credenciales y secretos de Streamlit
+.streamlit/secrets.toml
+
+# Ignorar otras posibles variables de entorno (buenas prácticas)
+.env
+
+# Ignorar entornos virtuales de Python (para que el repositorio no sea pesado)
+venv/
+env/
+.venv/
+
+# Ignorar archivos temporales o caché de Python y reportes generados
+__pycache__/
+*.pyc
+reporte_conexion_*.html
