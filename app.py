@@ -1,18 +1,13 @@
 import streamlit as st
 import pandas as pd
 import geopandas as gpd
-from shapely.geometry import Point
+from shapely.geometry import Point, MultiPoint
+from shapely.ops import voronoi_diagram
 import folium
-from folium.plugins import MarkerCluster, HeatMap
+from folium.plugins import HeatMap, MarkerCluster, Search
 from streamlit_folium import st_folium
-import requests
-from datetime import datetime, timedelta
-import plotly.express as px
-import urllib3
 import json
 import os
-
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
 # 1. CONFIGURACIÓN
@@ -22,167 +17,259 @@ st.title("📍 Sistema de Inteligencia Territorial")
 st.markdown("---")
 
 # ==========================================
-# 2. CARGA DE DATOS ORIGINALES
+# 2. CARGA DE DATOS OPERATIVOS (SENSORES)
 # ==========================================
 @st.cache_data(ttl=300)
 def cargar_datos():
-    if not os.path.exists("mis_datos.json"): return pd.DataFrame(), gpd.GeoDataFrame()
-    df = pd.read_json("mis_datos.json", orient="index")
-    if df.empty: return pd.DataFrame(), gpd.GeoDataFrame()
+    try:
+        if not os.path.exists("mis_datos.json"): return pd.DataFrame(), gpd.GeoDataFrame()
+        df = pd.read_json("mis_datos.json", orient="index")
+        if df.empty: return pd.DataFrame(), gpd.GeoDataFrame()
 
-    df['nombre_sitio'] = df.index.astype(str).str.replace("_", " ")
-    df['lat'] = pd.to_numeric(df.get('lat'), errors='coerce')
-    df['lon'] = pd.to_numeric(df.get('lon'), errors='coerce')
-    df = df.dropna(subset=['lat', 'lon'])
-    
-    gdf = gpd.GeoDataFrame(df, geometry=[Point(xy) for xy in zip(df.lon, df.lat)], crs="EPSG:4326")
-    return df, gdf
+        df['nombre_sitio'] = df.index.astype(str).str.replace("_", " ")
+        if 'lat' not in df.columns: df['lat'] = None
+        if 'lon' not in df.columns: df['lon'] = None
+            
+        df['lat'] = pd.to_numeric(df['lat'], errors='coerce')
+        df['lon'] = pd.to_numeric(df['lon'], errors='coerce')
+        df = df.dropna(subset=['lat', 'lon'])
+        
+        df = df[(df['lat'] > 19.0) & (df['lat'] < 19.8) & (df['lon'] > -99.6) & (df['lon'] < -98.8)]
+        
+        if df.empty: return pd.DataFrame(), gpd.GeoDataFrame()
+
+        geometria = [Point(xy) for xy in zip(df['lon'], df['lat'])]
+        gdf = gpd.GeoDataFrame(df, geometry=geometria, crs="EPSG:4326")
+        return df, gdf
+    except Exception as e:
+        return pd.DataFrame(), gpd.GeoDataFrame()
+
+# ==========================================
+# 3. CARGA DE CAPA DE COLONIAS OFICIALES
+# ==========================================
+@st.cache_data(ttl=3600)
+def cargar_colonias():
+    try:
+        if not os.path.exists("georef-mexico-colonia.json"):
+            return gpd.GeoDataFrame()
+            
+        with open("georef-mexico-colonia.json", encoding="utf-8") as f:
+            datos_col = json.load(f)
+            
+        features = []
+        for item in datos_col:
+            feat = item.get("geo_shape")
+            if not feat: continue
+            
+            nombre = item.get("col_name", [""])[0] if isinstance(item.get("col_name"), list) else item.get("col_name", "")
+            alcaldia = item.get("mun_name", [""])[0] if isinstance(item.get("mun_name"), list) else item.get("mun_name", "")
+            
+            feat["properties"] = {
+                "colonia": str(nombre).upper(),
+                "alcaldia": str(alcaldia).upper()
+            }
+            features.append(feat)
+            
+        gdf_col = gpd.GeoDataFrame.from_features({"type": "FeatureCollection", "features": features})
+        gdf_col = gdf_col.set_crs("EPSG:4326")
+        return gdf_col
+    except Exception as e:
+        return gpd.GeoDataFrame()
 
 df_datos, gdf_datos = cargar_datos()
+gdf_colonias = cargar_colonias()
 
-# ==========================================
-# 3. BARRA LATERAL ORIGINAL
-# ==========================================
-st.sidebar.markdown("### ⚙️ Panel de Control")
+if not df_datos.empty:
+    st.sidebar.header("⚙️ Panel de Control")
+    
+    # ------------------------------------------
+    # BUSCADOR GLOBAL DE COLONIAS 
+    # ------------------------------------------
+    st.sidebar.markdown("### 🏘️ Visor de Colonias")
+    if not gdf_colonias.empty:
+        # Corrección: Filtramos valores vacíos y cambiamos el placeholder para evitar confusiones
+        lista_todas_colonias = sorted([c for c in gdf_colonias['colonia'].dropna().unique() if str(c).strip() != ""])
+        colonias_seleccionadas = st.sidebar.multiselect(
+            "Selecciona la colonia para iluminar su límite:", 
+            lista_todas_colonias,
+            placeholder="Despliega o escribe una colonia..."
+        )
+    else:
+        colonias_seleccionadas = []
+        
+    st.sidebar.markdown("---")
+    
+    # ------------------------------------------
+    # FILTRO OPERATIVO DE SENSORES
+    # ------------------------------------------
+    st.sidebar.markdown("### 🔍 Buscador de Sensores")
+    texto_filtro = st.sidebar.text_input("Filtrar por nombre de sitio:", placeholder="Ej: ZARAGOZA, POZO...")
+    lista_deleg = sorted(df_datos['delegacion'].dropna().unique())
+    deleg_selec = st.sidebar.multiselect("Filtrar sensores por Demarcación:", lista_deleg)
+    
+    df_f = df_datos.copy()
+    if texto_filtro:
+        df_f = df_f[df_f['nombre_sitio'].str.contains(texto_filtro, case=False, na=False)]
+    if deleg_selec:
+        df_f = df_f[df_f['delegacion'].isin(deleg_selec)]
 
-# Filtros que usted tenía
-colonia_sel = st.sidebar.selectbox("Visor de Colonias (Límites):", ["Todas"] + ["Ej. CENTRO", "NARVARTE"])
-busqueda_sitio = st.sidebar.text_input("Buscador de Sensores:", placeholder="EJ: ZARAGOZA, POZO...")
-demarcacion_sel = st.sidebar.selectbox("Filtrar por Demarcación:", ["Todas"] + list(df_datos['delegacion'].unique()) if not df_datos.empty else ["Todas"])
+    st.sidebar.markdown("---")
+    modo_vista = st.sidebar.radio(
+        "Capa Operativa (Aplica a Sensores):",
+        ["1. Clusters", "2. Radios", "3. Sectores", "4. Calor", "5. Voronoi"]
+    )
 
-st.sidebar.markdown("**Capa Operativa (Aplica a Sensores):**")
-capa_seleccionada = st.sidebar.radio(
-    "Seleccione capa:",
-    ["1. Clusters", "2. Calor", "3. Radios", "4. Voronoi"],
-    label_visibility="collapsed"
-)
-
-# ==========================================
-# 4. MAPA TERRITORIAL COMPLETO
-# ==========================================
-# Aplicar filtros al DataFrame original
-df_f = df_datos.copy()
-if demarcacion_sel != "Todas":
-    df_f = df_f[df_f['delegacion'] == demarcacion_sel]
-if busqueda_sitio:
-    df_f = df_f[df_f['nombre_sitio'].str.contains(busqueda_sitio, case=False)]
-
-m = folium.Map(location=[19.4326, -99.1332], zoom_start=10, tiles="CartoDB positron")
-
-# Restaurar Perímetro CDMX
-if os.path.exists("perimetro_cdmx.json"):
-    with open("perimetro_cdmx.json", "r", encoding="utf-8") as f:
-        folium.GeoJson(json.load(f), name="Perímetro CDMX", style_function=lambda x: {'fillColor': 'transparent', 'color': 'black', 'weight': 2}).add_to(m)
-
-# Restaurar Capas Operativas
-if not df_f.empty:
-    if "Clusters" in capa_seleccionada:
-        marker_cluster = MarkerCluster().add_to(m)
-        for idx, row in df_f.iterrows():
-            folium.CircleMarker(location=[row['lat'], row['lon']], radius=5, color="blue", fill=True, popup=row['nombre_sitio']).add_to(marker_cluster)
-    elif "Calor" in capa_seleccionada:
-        heat_data = [[row['lat'], row['lon']] for index, row in df_f.iterrows()]
-        HeatMap(heat_data).add_to(m)
-
-st_folium(m, width="100%", height=500, returned_objects=[])
-
-# ==========================================
-# 5. KPIS ORIGINALES (CONTADORES)
-# ==========================================
-st.divider()
-col1, col2, col3 = st.columns(3)
-col1.metric("Sensores en pantalla", str(len(df_f)))
-col2.metric("Demarcaciones Filtradas", str(df_f['delegacion'].nunique()) if not df_f.empty else "0")
-col3.metric("Última Actualización", datetime.now().strftime("%H:%M:%S"))
-st.divider()
-
-# ==========================================
-# 6. TABLAS ORIGINALES INFERIORES
-# ==========================================
-col_tabla1, col_tabla2 = st.columns(2)
-with col_tabla1:
-    st.subheader("📋 Listado de Sitios")
-    if not df_f.empty:
-        st.dataframe(df_f[['nombre_sitio', 'delegacion', 'lat', 'lon']], use_container_width=True, hide_index=True)
-
-with col_tabla2:
-    st.subheader("📊 Distribución por Demarcación")
-    if not df_f.empty:
-        conteo_del = df_f['delegacion'].value_counts().reset_index()
-        conteo_del.columns = ['Demarcación', 'Total']
-        st.dataframe(conteo_del, use_container_width=True, hide_index=True)
-
-# ==========================================
-# 7. NUEVO MÓDULO SCADA BLINDADO CONTRA ERRORES
-# ==========================================
-st.markdown("---")
-st.header("🚨 Monitoreo Dinámico de Telemetría (SCADA)")
-
-def obtener_datos_api_seguro():
-    """Consume la API con manejo de errores si faltan las credenciales"""
+    # ==========================================
+    # 4. CONSTRUCCIÓN DEL MAPA
+    # ==========================================
+    if colonias_seleccionadas and not gdf_colonias.empty:
+        gdf_col_filtradas = gdf_colonias[gdf_colonias['colonia'].isin(colonias_seleccionadas)]
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            c_lat = gdf_col_filtradas.geometry.centroid.y.mean()
+            c_lon = gdf_col_filtradas.geometry.centroid.x.mean()
+    elif not df_f.empty:
+        c_lat, c_lon = df_f['lat'].mean(), df_f['lon'].mean()
+    else:
+        c_lat, c_lon = 19.4326, -99.1332
+        
+    mapa = folium.Map(location=[c_lat, c_lon], zoom_start=13 if colonias_seleccionadas else 11, tiles="cartodbpositron")
+    
     try:
-        api_url = st.secrets["api_scada"]["url"]
-        token = st.secrets["api_scada"]["token"]
-        sitios_config = st.secrets["sitios"]
-    except KeyError as e:
-        # Si falta la configuración en la nube, evitamos que la app choque
-        st.error(f"⚠️ Error de configuración: Falta la llave `{e}` en los Secretos de Streamlit Cloud.")
-        st.info("💡 Ve a 'Manage app' -> 'Settings' -> 'Secrets' y pega el contenido de tu archivo secrets.toml.")
-        return []
+        folium.GeoJson("perimetro_cdmx.json", name="CDMX", style_function=lambda x: {'color': '#2C3E50', 'weight': 2, 'dashArray': '5, 5'}).add_to(mapa)
+    except: pass
 
-    # Simulación/Extracción de datos (Reemplace con su request.post si lo requiere)
-    datos_recolectados = []
-    import random
-    for nombre_sitio, config in sitios_config.items():
-        uid = config.get("uid", "Sin UID")
-        estado_sim = random.choice(["Normal", "Flatline", "Vacio"])
-        ultimo_valor = random.uniform(config.get("min", 0), config.get("max", 1) + 1) if estado_sim == "Normal" else None
+    if colonias_seleccionadas and not gdf_colonias.empty:
+        folium.GeoJson(
+            gdf_col_filtradas,
+            name="Colonias Seleccionadas",
+            style_function=lambda x: {
+                'fillColor': '#F1C40F',
+                'color': '#E67E22',
+                'weight': 3,
+                'fillOpacity': 0.3
+            },
+            tooltip=folium.GeoJsonTooltip(fields=['colonia', 'alcaldia'], aliases=['Colonia:', 'Demarcación:'])
+        ).add_to(mapa)
+
+    if not df_f.empty:
+        if modo_vista == "1. Clusters":
+            cluster = MarkerCluster().add_to(mapa)
+            for i, r in df_f.iterrows():
+                # Corrección: Se agregó el popup además del tooltip
+                folium.CircleMarker(
+                    location=[r['lat'], r['lon']],
+                    radius=7,
+                    color="#2C3E50",
+                    fill=True,
+                    fill_color="#922A27",
+                    fill_opacity=0.9,
+                    tooltip=f"🏢 {r['nombre_sitio']}",
+                    popup=folium.Popup(f"<b>🏢 {r['nombre_sitio']}</b>", max_width=300)
+                ).add_to(cluster)
         
-        datos_recolectados.append({
-            "sensor": nombre_sitio,
-            "delegacion": config.get("delegacion", "N/A"), 
-            "lat": config.get("lat", 0.0),                
-            "lon": config.get("lon", 0.0),                
-            "valor": ultimo_valor,
-            "ultima_conexion": datetime.now() if estado_sim != "Vacio" else datetime.now() - timedelta(days=3),
-            "es_flatline": estado_sim == "Flatline",
-            "historial_caidas": "Estable" if estado_sim == "Normal" else "Falla Detectada",
-            "min_val": config.get("min", 0), 
-            "max_val": config.get("max", 1)
-        })
-    return datos_recolectados
-
-def procesar_datos_scada(datos):
-    if not datos: return pd.DataFrame()
-    df = pd.DataFrame(datos)
-    df['estado'] = "Operación Normal" # Simplificado para validación visual
-    df.loc[df['valor'].isna(), 'estado'] = "Sin Señal"
-    df.loc[df['es_flatline'] == True, 'estado'] = "Dato Trancado"
-    return df
-
-# Botón de ejecución protegido
-col_btn, _ = st.columns([1, 3])
-with col_btn:
-    actualizar = st.button("🔄 Consultar SCADA", use_container_width=True)
-
-if actualizar or 'df_scada' in st.session_state:
-    if actualizar:
-        with st.spinner("Conectando con el servidor SCADA..."):
-            datos_crudos = obtener_datos_api_seguro()
-            if datos_crudos:
-                st.session_state.df_scada = procesar_datos_scada(datos_crudos)
-                st.success("¡Estados operativos actualizados!")
-
-    if 'df_scada' in st.session_state and not st.session_state.df_scada.empty:
-        df_scada = st.session_state.df_scada
+        elif modo_vista == "2. Radios":
+            for i, r in df_f.iterrows():
+                # Corrección: Se agregaron tooltip y popup
+                folium.Circle(
+                    [r['lat'], r['lon']], 
+                    radius=500, 
+                    color="#0096FF", 
+                    fill=True,
+                    tooltip=f"📍 {r['nombre_sitio']}",
+                    popup=folium.Popup(f"<b>📍 {r['nombre_sitio']}</b>", max_width=300)
+                ).add_to(mapa)
         
-        col_pie, col_res = st.columns([1, 2])
-        with col_pie:
-            conteo = df_scada['estado'].value_counts().reset_index()
-            conteo.columns = ['Estado', 'Cantidad']
-            fig = px.pie(conteo, values='Cantidad', names='Estado', hole=0.4, title="Diagnóstico de Red")
-            st.plotly_chart(fig, use_container_width=True)
-            
-        with col_res:
-            st.markdown("##### Resumen Ejecutivo SCADA")
-            st.dataframe(df_scada[['sensor', 'estado', 'valor', 'historial_caidas']], use_container_width=True, hide_index=True)
+        elif modo_vista == "3. Sectores":
+            if 'delegacion' in df_f.columns:
+                gdf_f = gpd.GeoDataFrame(df_f, geometry=[Point(xy) for xy in zip(df_f['lon'], df_f['lat'])], crs="EPSG:4326")
+                sectores = gdf_f.dissolve(by='delegacion')
+                sectores['geometry'] = sectores.geometry.convex_hull
+                sectores_validos = sectores[sectores.geometry.type.isin(['Polygon', 'MultiPolygon'])]
+                if not sectores_validos.empty:
+                    folium.GeoJson(sectores_validos, style_function=lambda x: {'fillColor': '#FF6400', 'color': '#FF6400', 'weight': 2, 'fillOpacity': 0.4}, tooltip=folium.GeoJsonTooltip(fields=['delegacion'], aliases=['Delegación:'])).add_to(mapa)
+
+        elif modo_vista == "4. Calor":
+            datos_calor = [[r['lat'], r['lon']] for i, r in df_f.iterrows()]
+            HeatMap(datos_calor, radius=15, blur=10).add_to(mapa)
+
+        elif modo_vista == "5. Voronoi":
+            if len(df_f) > 3:
+                try:
+                    puntos = MultiPoint([(r.lon, r.lat) for i, r in df_f.iterrows()])
+                    regiones_voronoi = voronoi_diagram(puntos)
+                    
+                    gdf_voronoi = gpd.GeoDataFrame(geometry=[geom for geom in regiones_voronoi.geoms], crs="EPSG:4326")
+                    
+                    folium.GeoJson(
+                        gdf_voronoi, 
+                        style_function=lambda x: {
+                            'fillColor': '#28B463', 
+                            'color': '#196F3D',
+                            'weight': 2, 
+                            'fillOpacity': 0.2
+                        }
+                    ).add_to(mapa)
+                    
+                    for i, r in df_f.iterrows():
+                        # Corrección: Se agregó el popup además del tooltip
+                        folium.CircleMarker(
+                            [r['lat'], r['lon']], 
+                            radius=4, 
+                            color='#E74C3C', 
+                            fill=True, 
+                            fill_opacity=1,
+                            tooltip=f"🏢 {r['nombre_sitio']}",
+                            popup=folium.Popup(f"<b>🏢 {r['nombre_sitio']}</b>", max_width=300)
+                        ).add_to(mapa)
+                except Exception as e:
+                    st.error(f"⚠️ Error matemático al calcular polígonos de Voronoi: {e}")
+            else:
+                st.warning("Se requieren al menos 4 puntos en pantalla para calcular áreas de Voronoi.")
+
+    st_folium(mapa, width=1200, height=550)
+
+    # ==========================================
+    # 5. MÉTRICAS EJECUTIVAS
+    # ==========================================
+    st.markdown("---")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Sensores en pantalla", len(df_f))
+    if 'max' in df_f.columns:
+        c2.metric("Presión Promedio", round(pd.to_numeric(df_f['max'], errors='coerce').mean(), 3))
+    c3.metric("Demarcaciones Filtradas", df_f['delegacion'].nunique())
+
+    if not df_f.empty:
+        st.markdown("### 📋 Listado de Sensores en Pantalla")
+        st.dataframe(df_f[['nombre_sitio', 'delegacion', 'max']].sort_values(by='nombre_sitio'), use_container_width=True)
+
+    # ==========================================
+    # 6. DESGLOSE POR DEMARCACIÓN 
+    # ==========================================
+    st.markdown("---")
+    st.subheader("📊 Distribución de la Búsqueda")
+    if 'delegacion' in df_f.columns and not df_f.empty:
+        conteo_delegaciones = df_f['delegacion'].value_counts().reset_index()
+        conteo_delegaciones.columns = ['Demarcación', 'Sensores Encontrados']
+        st.dataframe(conteo_delegaciones, use_container_width=True)
+
+    # ==========================================
+    # 7. AUDITORÍA DE CALIDAD DE DATOS
+    # ==========================================
+    st.markdown("---")
+    st.subheader("🛑 Auditoría Operativa: Sitios descartados del total original")
+    try:
+        df_crudo = pd.read_json("mis_datos.json", orient="index")
+        descartados = df_crudo[~df_crudo.index.isin(df_datos.index)]
+        
+        if not descartados.empty:
+            st.warning(f"Se aislaron {len(descartados)} registros por errores de captura en coordenadas:")
+            st.dataframe(descartados[['delegacion', 'lat', 'lon']])
+        else:
+            st.success("Todos los registros del archivo original tienen coordenadas correctas.")
+    except Exception as e:
+        st.info("No se pudo realizar la auditoría de captura en este momento.")
+
+else:
+    st.info("💡 Cargue registros operativos con coordenadas válidas para iniciar el tablero.")
