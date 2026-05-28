@@ -322,15 +322,16 @@ if not df_datos.empty:
             with col_res_tab:
                 st.dataframe(df_scada[['sensor', 'estado', 'valor']], hide_index=True, use_container_width=True)
             
-            # --- BOTÓN DE DESCARGA HTML EN BARRA LATERAL ---
-            st.sidebar.markdown("---")
-            st.sidebar.markdown("### 📥 Reportes y Descargas")
-            st.sidebar.download_button(
-                label="📄 Descargar Reporte Completo (HTML)",
-                data=st.session_state.html_generado,
-                file_name=f"Reporte_SCADA_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
-                mime="text/html"
-            )
+    # --- BOTÓN DE DESCARGA HTML EN BARRA LATERAL ---
+            if 'html_generado' in st.session_state:
+                st.sidebar.markdown("---")
+                st.sidebar.markdown("### 📥 Reportes y Descargas")
+                st.sidebar.download_button(
+                    label="📄 Descargar Reporte Completo (HTML)",
+                    data=st.session_state.html_generado,
+                    file_name=f"Reporte_SCADA_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
+                    mime="text/html"
+                )
 
 else:
     st.info("💡 Cargue registros operativos con coordenadas válidas para iniciar el tablero.")
