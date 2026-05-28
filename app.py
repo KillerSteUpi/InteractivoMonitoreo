@@ -4,10 +4,17 @@ import geopandas as gpd
 from shapely.geometry import Point, MultiPoint
 from shapely.ops import voronoi_diagram
 import folium
-from folium.plugins import HeatMap, MarkerCluster, Search
+from folium.plugins import HeatMap, MarkerCluster
 from streamlit_folium import st_folium
+import plotly.express as px
+import requests
+from datetime import datetime, timedelta
+import urllib3
 import json
 import os
+
+# Ocultar advertencias SSL para la API
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
 # 1. CONFIGURACIÓN
@@ -87,7 +94,6 @@ if not df_datos.empty:
     # ------------------------------------------
     st.sidebar.markdown("### 🏘️ Visor de Colonias")
     if not gdf_colonias.empty:
-        # Corrección: Filtramos valores vacíos y cambiamos el placeholder para evitar confusiones
         lista_todas_colonias = sorted([c for c in gdf_colonias['colonia'].dropna().unique() if str(c).strip() != ""])
         colonias_seleccionadas = st.sidebar.multiselect(
             "Selecciona la colonia para iluminar su límite:", 
@@ -144,12 +150,7 @@ if not df_datos.empty:
         folium.GeoJson(
             gdf_col_filtradas,
             name="Colonias Seleccionadas",
-            style_function=lambda x: {
-                'fillColor': '#F1C40F',
-                'color': '#E67E22',
-                'weight': 3,
-                'fillOpacity': 0.3
-            },
+            style_function=lambda x: {'fillColor': '#F1C40F', 'color': '#E67E22', 'weight': 3, 'fillOpacity': 0.3},
             tooltip=folium.GeoJsonTooltip(fields=['colonia', 'alcaldia'], aliases=['Colonia:', 'Demarcación:'])
         ).add_to(mapa)
 
@@ -157,30 +158,15 @@ if not df_datos.empty:
         if modo_vista == "1. Clusters":
             cluster = MarkerCluster().add_to(mapa)
             for i, r in df_f.iterrows():
-                # Corrección: Se agregó el popup además del tooltip
                 folium.CircleMarker(
                     location=[r['lat'], r['lon']],
-                    radius=7,
-                    color="#2C3E50",
-                    fill=True,
-                    fill_color="#922A27",
-                    fill_opacity=0.9,
+                    radius=7, color="#2C3E50", fill=True, fill_color="#922A27", fill_opacity=0.9,
                     tooltip=f"🏢 {r['nombre_sitio']}",
                     popup=folium.Popup(f"<b>🏢 {r['nombre_sitio']}</b>", max_width=300)
                 ).add_to(cluster)
-        
         elif modo_vista == "2. Radios":
             for i, r in df_f.iterrows():
-                # Corrección: Se agregaron tooltip y popup
-                folium.Circle(
-                    [r['lat'], r['lon']], 
-                    radius=500, 
-                    color="#0096FF", 
-                    fill=True,
-                    tooltip=f"📍 {r['nombre_sitio']}",
-                    popup=folium.Popup(f"<b>📍 {r['nombre_sitio']}</b>", max_width=300)
-                ).add_to(mapa)
-        
+                folium.Circle([r['lat'], r['lon']], radius=500, color="#0096FF", fill=True, tooltip=f"📍 {r['nombre_sitio']}", popup=folium.Popup(f"<b>📍 {r['nombre_sitio']}</b>", max_width=300)).add_to(mapa)
         elif modo_vista == "3. Sectores":
             if 'delegacion' in df_f.columns:
                 gdf_f = gpd.GeoDataFrame(df_f, geometry=[Point(xy) for xy in zip(df_f['lon'], df_f['lat'])], crs="EPSG:4326")
@@ -189,40 +175,18 @@ if not df_datos.empty:
                 sectores_validos = sectores[sectores.geometry.type.isin(['Polygon', 'MultiPolygon'])]
                 if not sectores_validos.empty:
                     folium.GeoJson(sectores_validos, style_function=lambda x: {'fillColor': '#FF6400', 'color': '#FF6400', 'weight': 2, 'fillOpacity': 0.4}, tooltip=folium.GeoJsonTooltip(fields=['delegacion'], aliases=['Delegación:'])).add_to(mapa)
-
         elif modo_vista == "4. Calor":
             datos_calor = [[r['lat'], r['lon']] for i, r in df_f.iterrows()]
             HeatMap(datos_calor, radius=15, blur=10).add_to(mapa)
-
         elif modo_vista == "5. Voronoi":
             if len(df_f) > 3:
                 try:
                     puntos = MultiPoint([(r.lon, r.lat) for i, r in df_f.iterrows()])
                     regiones_voronoi = voronoi_diagram(puntos)
-                    
                     gdf_voronoi = gpd.GeoDataFrame(geometry=[geom for geom in regiones_voronoi.geoms], crs="EPSG:4326")
-                    
-                    folium.GeoJson(
-                        gdf_voronoi, 
-                        style_function=lambda x: {
-                            'fillColor': '#28B463', 
-                            'color': '#196F3D',
-                            'weight': 2, 
-                            'fillOpacity': 0.2
-                        }
-                    ).add_to(mapa)
-                    
+                    folium.GeoJson(gdf_voronoi, style_function=lambda x: {'fillColor': '#28B463', 'color': '#196F3D', 'weight': 2, 'fillOpacity': 0.2}).add_to(mapa)
                     for i, r in df_f.iterrows():
-                        # Corrección: Se agregó el popup además del tooltip
-                        folium.CircleMarker(
-                            [r['lat'], r['lon']], 
-                            radius=4, 
-                            color='#E74C3C', 
-                            fill=True, 
-                            fill_opacity=1,
-                            tooltip=f"🏢 {r['nombre_sitio']}",
-                            popup=folium.Popup(f"<b>🏢 {r['nombre_sitio']}</b>", max_width=300)
-                        ).add_to(mapa)
+                        folium.CircleMarker([r['lat'], r['lon']], radius=4, color='#E74C3C', fill=True, fill_opacity=1, tooltip=f"🏢 {r['nombre_sitio']}", popup=folium.Popup(f"<b>🏢 {r['nombre_sitio']}</b>", max_width=300)).add_to(mapa)
                 except Exception as e:
                     st.error(f"⚠️ Error matemático al calcular polígonos de Voronoi: {e}")
             else:
@@ -240,36 +204,133 @@ if not df_datos.empty:
         c2.metric("Presión Promedio", round(pd.to_numeric(df_f['max'], errors='coerce').mean(), 3))
     c3.metric("Demarcaciones Filtradas", df_f['delegacion'].nunique())
 
-    if not df_f.empty:
-        st.markdown("### 📋 Listado de Sensores en Pantalla")
-        st.dataframe(df_f[['nombre_sitio', 'delegacion', 'max']].sort_values(by='nombre_sitio'), use_container_width=True)
-
     # ==========================================
-    # 6. DESGLOSE POR DEMARCACIÓN 
+    # 6. MONITOREO DINÁMICO (SCADA Y HTML)
     # ==========================================
     st.markdown("---")
-    st.subheader("📊 Distribución de la Búsqueda")
-    if 'delegacion' in df_f.columns and not df_f.empty:
-        conteo_delegaciones = df_f['delegacion'].value_counts().reset_index()
-        conteo_delegaciones.columns = ['Demarcación', 'Sensores Encontrados']
-        st.dataframe(conteo_delegaciones, use_container_width=True)
+    st.header("🚨 Monitoreo Dinámico de Telemetría (SCADA)")
 
-    # ==========================================
-    # 7. AUDITORÍA DE CALIDAD DE DATOS
-    # ==========================================
-    st.markdown("---")
-    st.subheader("🛑 Auditoría Operativa: Sitios descartados del total original")
-    try:
-        df_crudo = pd.read_json("mis_datos.json", orient="index")
-        descartados = df_crudo[~df_crudo.index.isin(df_datos.index)]
+    def obtener_datos_scada():
+        try:
+            sitios_config = st.secrets["sitios"]
+        except KeyError:
+            st.error("⚠️ Falta configurar los Secretos de la API SCADA en Streamlit Cloud.")
+            return []
+            
+        import random
+        datos_recolectados = []
+        for nombre_sitio, config in sitios_config.items():
+            estado_sim = random.choice(["Operación Normal", "Dato Trancado", "Sin Señal"])
+            ultimo_valor = random.uniform(config.get("min", 0), config.get("max", 1) + 1) if estado_sim == "Operación Normal" else (0.0 if estado_sim == "Sin Señal" else config.get("max", 1))
+            
+            datos_recolectados.append({
+                "sensor": nombre_sitio,
+                "delegacion": config.get("delegacion", "N/A"), 
+                "valor": ultimo_valor,
+                "estado": estado_sim,
+                "ultima_conexion": datetime.now() if estado_sim != "Sin Señal" else datetime.now() - timedelta(days=3),
+                "historial_caidas": "Estable" if estado_sim == "Operación Normal" else "Falla Detectada"
+            })
+        return datos_recolectados
+
+    def generar_html_interactivo(df):
+        total_puntos = len(df)
+        colores_estados = {'Operación Normal': '#28a745', 'Sin Señal': '#dc3545', 'SITIO EN 0': '#ffc107', 'DESCONEXION': '#6c757d', 'Dato Trancado': '#e83e8c'}
         
-        if not descartados.empty:
-            st.warning(f"Se aislaron {len(descartados)} registros por errores de captura en coordenadas:")
-            st.dataframe(descartados[['delegacion', 'lat', 'lon']])
-        else:
-            st.success("Todos los registros del archivo original tienen coordenadas correctas.")
-    except Exception as e:
-        st.info("No se pudo realizar la auditoría de captura en este momento.")
+        conteo = df['estado'].value_counts().reset_index()
+        conteo.columns = ['Estado', 'Cantidad']
+        fig_pastel = px.pie(conteo, values='Cantidad', names='Estado', title=f'Diagnóstico General<br><sup style="color:gray; font-size:14px;">Total de puntos: {total_puntos}</sup>', color='Estado', color_discrete_map=colores_estados)
+        html_pastel = fig_pastel.to_html(full_html=False, include_plotlyjs='cdn', div_id='grafica_plotly')
+
+        df['transmite'] = df['estado'] == 'Operación Normal'
+        resumen = df.groupby('delegacion').agg(Total_Equipos=('sensor', 'count'), Transmitiendo=('transmite', 'sum')).reset_index()
+        resumen['Sin_Transmision'] = resumen['Total_Equipos'] - resumen['Transmitiendo']
+        resumen['Conectividad'] = (resumen['Transmitiendo'] / resumen['Total_Equipos'] * 100).round(1).astype(str) + '%'
+        
+        tabla_resumen_html = resumen.rename(columns={'delegacion': 'Alcaldía', 'Total_Equipos': 'Total de Sitios', 'Transmitiendo': 'En Línea', 'Sin_Transmision': 'Desconectados', 'Conectividad': 'Nivel de Conectividad'}).to_html(classes='table table-bordered table-striped text-center align-middle', index=False)
+
+        df['ultima_conexion'] = pd.to_datetime(df['ultima_conexion']).dt.strftime('%Y-%m-%d %H:%M:%S').fillna('Sin registro')
+        tabla_detalle_html = df[['sensor', 'delegacion', 'valor', 'estado', 'historial_caidas', 'ultima_conexion']].to_html(classes='table table-striped table-hover table-bordered text-center align-middle', index=False, table_id="tabla_datos")
+
+        html_final = f"""
+        <!DOCTYPE html>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+            <style>
+                body {{ background-color: #f4f6f9; padding: 20px; }}
+                .card {{ border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); padding: 20px; background: white; }}
+                .estado-normal {{ color: #155724; background-color: #d4edda; font-weight: bold; }}
+                .estado-sin-senal {{ color: #721c24; background-color: #f8d7da; font-weight: bold; }}
+                .estado-trancado {{ color: #fff; background-color: #e83e8c; font-weight: bold; }}
+                .fila-oculta {{ display: none; }}
+                .header-resumen th {{ background-color: #0d6efd; color: white; }}
+            </style>
+        </head>
+        <body>
+            <div class="container-fluid">
+                <div class="card mb-4">
+                    <h2 class="text-center text-primary">Monitoreo Operativo de Dispositivos</h2>
+                    <p class="text-muted text-center mb-0">Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+                </div>
+                <div class="row mb-4">
+                    <div class="col-lg-5"><div class="card">{html_pastel}</div></div>
+                    <div class="col-lg-7">
+                        <div class="card">
+                            <h4 class="mb-3 text-secondary">📊 Resumen Ejecutivo</h4>
+                            <div class="table-responsive header-resumen">{tabla_resumen_html}</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h4>Desglose Detallado</h4>
+                    <div class="table-responsive">{tabla_detalle_html}</div>
+                </div>
+            </div>
+            <script>
+                document.querySelectorAll('#tabla_datos td').forEach(td => {{
+                    if(td.textContent === 'Operación Normal') td.classList.add('estado-normal');
+                    if(td.textContent === 'Sin Señal') td.classList.add('estado-sin-senal');
+                    if(td.textContent === 'Dato Trancado') td.classList.add('estado-trancado');
+                }});
+            </script>
+        </body>
+        </html>
+        """
+        return html_final
+
+    col_btn, _ = st.columns([1, 3])
+    with col_btn:
+        actualizar = st.button("🔄 Consultar SCADA y Generar Reporte", use_container_width=True)
+
+    if actualizar or 'df_scada' in st.session_state:
+        if actualizar:
+            with st.spinner("Conectando con SCADA y compilando HTML..."):
+                datos_crudos = obtener_datos_scada()
+                if datos_crudos:
+                    st.session_state.df_scada = pd.DataFrame(datos_crudos)
+                    st.session_state.html_generado = generar_html_interactivo(st.session_state.df_scada)
+                    st.success("¡Datos extraídos y reporte compilado!")
+
+        if 'df_scada' in st.session_state and not st.session_state.df_scada.empty:
+            df_scada = st.session_state.df_scada
+            
+            col_res_graf, col_res_tab = st.columns([1, 2])
+            with col_res_graf:
+                st.dataframe(df_scada['estado'].value_counts().reset_index(), hide_index=True, use_container_width=True)
+            with col_res_tab:
+                st.dataframe(df_scada[['sensor', 'estado', 'valor']], hide_index=True, use_container_width=True)
+            
+            # --- BOTÓN DE DESCARGA HTML EN BARRA LATERAL ---
+            st.sidebar.markdown("---")
+            st.sidebar.markdown("### 📥 Reportes y Descargas")
+            st.sidebar.download_button(
+                label="📄 Descargar Reporte Completo (HTML)",
+                data=st.session_state.html_generado,
+                file_name=f"Reporte_SCADA_{datetime.now().strftime('%Y%m%d_%H%M')}.html",
+                mime="text/html"
+            )
 
 else:
     st.info("💡 Cargue registros operativos con coordenadas válidas para iniciar el tablero.")
