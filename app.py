@@ -13,7 +13,6 @@ import urllib3
 import json
 import os
 
-# Ocultar advertencias SSL para la API
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ==========================================
@@ -24,7 +23,7 @@ st.title("📍 Sistema de Inteligencia Territorial")
 st.markdown("---")
 
 # ==========================================
-# 2. CARGA DE DATOS OPERATIVOS (SENSORES)
+# 2. CARGA DE DATOS OPERATIVOS (SENSORES TERRITORIALES)
 # ==========================================
 @st.cache_data(ttl=300)
 def cargar_datos():
@@ -89,9 +88,7 @@ gdf_colonias = cargar_colonias()
 if not df_datos.empty:
     st.sidebar.header("⚙️ Panel de Control")
     
-    # ------------------------------------------
-    # BUSCADOR GLOBAL DE COLONIAS 
-    # ------------------------------------------
+    # --- VISOR DE COLONIAS ---
     st.sidebar.markdown("### 🏘️ Visor de Colonias")
     if not gdf_colonias.empty:
         lista_todas_colonias = sorted([c for c in gdf_colonias['colonia'].dropna().unique() if str(c).strip() != ""])
@@ -105,9 +102,7 @@ if not df_datos.empty:
         
     st.sidebar.markdown("---")
     
-    # ------------------------------------------
-    # FILTRO OPERATIVO DE SENSORES
-    # ------------------------------------------
+    # --- FILTRO OPERATIVO ---
     st.sidebar.markdown("### 🔍 Buscador de Sensores")
     texto_filtro = st.sidebar.text_input("Filtrar por nombre de sitio:", placeholder="Ej: ZARAGOZA, POZO...")
     lista_deleg = sorted(df_datos['delegacion'].dropna().unique())
@@ -126,7 +121,7 @@ if not df_datos.empty:
     )
 
     # ==========================================
-    # 4. CONSTRUCCIÓN DEL MAPA
+    # 4. CONSTRUCCIÓN DEL MAPA TERRITORIAL
     # ==========================================
     if colonias_seleccionadas and not gdf_colonias.empty:
         gdf_col_filtradas = gdf_colonias[gdf_colonias['colonia'].isin(colonias_seleccionadas)]
@@ -205,182 +200,241 @@ if not df_datos.empty:
     c3.metric("Demarcaciones Filtradas", df_f['delegacion'].nunique())
 
     # ==========================================
-    # 6. MONITOREO DINÁMICO (SCADA Y HTML)
+    # 6. MONITOREO DINÁMICO (REAL SCADA API)
     # ==========================================
     st.markdown("---")
-    st.header("🚨 Monitoreo Dinámico de Telemetría (SCADA)")
+    st.header("🚨 Monitoreo Dinámico de Telemetría (SCADA Real)")
 
-    def obtener_datos_scada():
+    def obtener_datos_scada_reales():
+        """Consumo real de la API SCADA leyendo de st.secrets"""
         try:
+            api_url = st.secrets["api_scada"]["url"]
+            token = st.secrets["api_scada"]["token"]
             sitios_config = st.secrets["sitios"]
         except KeyError:
-            st.error("⚠️ Falta configurar los Secretos de la API SCADA en Streamlit Cloud.")
+            st.error("⚠️ Faltan credenciales en la configuración de Streamlit Cloud (Secrets).")
             return []
             
-        import random
+        headers = {'nexustoken': token, 'Content-Type': 'application/json'}
+        ahora = datetime.now()
+        end_ts = int(ahora.timestamp() * 1000)
+        start_ts = int((ahora - timedelta(days=3)).timestamp() * 1000)
+        
         datos_recolectados = []
+        
         for nombre_sitio, config in sitios_config.items():
-            estado_sim = random.choice(["Operación Normal", "Dato Trancado", "Sin Señal"])
-            ultimo_valor = random.uniform(config.get("min", 0), config.get("max", 1) + 1) if estado_sim == "Operación Normal" else (0.0 if estado_sim == "Sin Señal" else config.get("max", 1))
+            uid = config.get("uid")
+            min_val = float(config.get("min", 0.0))
+            max_val = float(config.get("max", 0.0))
+            lat = float(config.get("lat", 0.0))
+            lon = float(config.get("lon", 0.0))
+            delegacion = config.get("delegacion", "N/A")
             
-            datos_recolectados.append({
-                "sensor": nombre_sitio,
-                "delegacion": config.get("delegacion", "N/A"), 
-                "valor": ultimo_valor,
-                "estado": estado_sim,
-                "ultima_conexion": datetime.now() if estado_sim != "Sin Señal" else datetime.now() - timedelta(days=3),
-                "historial_caidas": "Estable" if estado_sim == "Operación Normal" else "Falla Detectada"
-            })
+            url_consulta = f"{api_url}/{uid}/last-data"
+            payload = {"uids": [uid], "startTs": start_ts, "endTs": end_ts, "dataSource": "RAW"}
+            
+            try:
+                # Petición a la API SCADA
+                respuesta = requests.post(url_consulta, headers=headers, json=payload, verify=False, timeout=15)
+                
+                if respuesta.status_code == 200:
+                    data_json = respuesta.json()
+                    es_flatline = False
+                    historial_caidas = "Estable (Últimos 3 días)"
+                    ultimo_registro = {}
+                    
+                    if isinstance(data_json, list) and len(data_json) > 0:
+                        # Ordenamos cronológicamente
+                        data_json = sorted(data_json, key=lambda x: x.get("timeStamp", 0))
+                        datos_validos = [d for d in data_json if d.get("value") is not None and str(d.get("value")).strip().upper() != "N/A" and str(d.get("value")).strip() != ""]
+                        
+                        # --- Detección de Flatline ---
+                        if len(datos_validos) > 1:
+                            ts_actual = int(datetime.now().timestamp())
+                            ts_limite = ts_actual - (8 * 3600)
+                            datos_recientes = [d for d in datos_validos if d.get("timeStamp", 0) >= ts_limite]
+                            if len(datos_recientes) >= 3:
+                                valores_recientes = [d.get("value") for d in datos_recientes]
+                                valor_actual = valores_recientes[-1]
+                                if len(set(valores_recientes)) == 1 and valor_actual not in [0, 0.0]:
+                                    es_flatline = True
+                        
+                        # --- Detección de Caídas ---
+                        if len(datos_validos) == 0:
+                            historial_caidas = "100% Tramas vacías (Últimos 3 días)"
+                        else:
+                            paquete_final = data_json[-1]
+                            if paquete_final.get("value") is None or str(paquete_final.get("value")).strip() == "":
+                                ts_ultimo_valido = datos_validos[-1].get("timeStamp")
+                                ts_ultimo_paquete = paquete_final.get("timeStamp")
+                                if ts_ultimo_valido and ts_ultimo_paquete:
+                                    hueco_actual = ts_ultimo_paquete - ts_ultimo_valido
+                                    if hueco_actual > (6 * 3600):
+                                        caida_actual_str = datetime.fromtimestamp(ts_ultimo_valido).strftime('%d/%m/%Y %H:%M')
+                                        horas_actuales = round(hueco_actual / 3600, 1)
+                                        historial_caidas = f"Falla ACTUAL: Sin datos desde {caida_actual_str} ({horas_actuales}h)"
+                        
+                        ultimo_registro = datos_validos[-1] if datos_validos else data_json[-1]
+                    else:
+                        ultimo_registro = data_json if isinstance(data_json, dict) else {}
+                    
+                    epoch_ts = ultimo_registro.get("timeStamp")
+                    valor_sensor = ultimo_registro.get("value")
+                    fecha_conexion = datetime.fromtimestamp(epoch_ts) if epoch_ts is not None else None
+                    
+                    datos_recolectados.append({
+                        "sensor": nombre_sitio,
+                        "delegacion": delegacion,
+                        "lat": lat,
+                        "lon": lon,
+                        "min_val": min_val,
+                        "max_val": max_val,
+                        "valor": valor_sensor,
+                        "ultima_conexion": fecha_conexion,
+                        "es_flatline": es_flatline,
+                        "historial_caidas": historial_caidas
+                    })
+                else:
+                    # Falló la API para este sensor
+                    pass
+            except Exception as e:
+                # Falló la red
+                pass
+                
         return datos_recolectados
+
+    def procesar_logica_scada(datos):
+        df = pd.DataFrame(datos)
+        if df.empty: return df
+        
+        df['ultima_conexion'] = pd.to_datetime(df['ultima_conexion'], errors='coerce')
+        fecha_sin_senal = datetime.now() - timedelta(days=2)
+        fecha_trancado = datetime.now() - timedelta(hours=24)
+        
+        def evaluar_estado(fila):
+            v = fila.get('valor')
+            fecha = fila.get('ultima_conexion')
+            min_v = fila.get('min_val', 0)
+            max_v = fila.get('max_val', 0)
+            flatline = fila.get('es_flatline', False)
+            
+            if pd.isna(fecha) or fecha < fecha_sin_senal: return "Sin Señal"
+            if fecha < fecha_trancado: return "Desactualizado"
+            if flatline: return "Dato Trancado"
+            if pd.isna(v) or v is None or str(v).strip() == "": return "DESCONEXION"
+            if str(v).strip().upper() == "N/A": return "NO HAY DATO"
+            
+            try:
+                val_num = float(v)
+                if val_num == 0 or val_num == 0.0: return "SITIO EN 0"
+                elif val_num > max_v: return "Alarma: Nivel Alto"
+                elif val_num < min_v: return "Alarma: Nivel Bajo"
+                else: return "Operación Normal"
+            except ValueError:
+                return "Error de Formato"
+
+        df['estado'] = df.apply(evaluar_estado, axis=1)
+        df['valor'] = df['valor'].fillna('')
+        return df
 
     def generar_html_interactivo(df):
         total_puntos = len(df)
-        colores_estados = {'Operación Normal': '#28a745', 'Sin Señal': '#dc3545', 'SITIO EN 0': '#ffc107', 'DESCONEXION': '#6c757d', 'Dato Trancado': '#e83e8c'}
+        colores_estados = {
+            'Operación Normal': '#28a745', 'Sin Señal': '#dc3545', 'SITIO EN 0': '#ffc107', 
+            'DESCONEXION': '#6c757d', 'NO HAY DATO': '#17a2b8', 'Alarma: Nivel Alto': '#fd7e14', 
+            'Alarma: Nivel Bajo': '#6f42c1', 'Dato Trancado': '#e83e8c', 'Desactualizado': '#856404'
+        }
         
+        # 1. Gráfica Pastel
         conteo = df['estado'].value_counts().reset_index()
         conteo.columns = ['Estado', 'Cantidad']
         fig_pastel = px.pie(conteo, values='Cantidad', names='Estado', title=f'Diagnóstico General<br><sup style="color:gray; font-size:14px;">Total de puntos: {total_puntos}</sup>', color='Estado', color_discrete_map=colores_estados)
         html_pastel = fig_pastel.to_html(full_html=False, include_plotlyjs='cdn', div_id='grafica_plotly')
 
-        df['transmite'] = df['estado'] == 'Operación Normal'
+        # 2. Mapa Interactivo Plotly
+        df_mapa = df[(df['lat'] != 0.0) & (df['lon'] != 0.0)].copy()
+        if not df_mapa.empty:
+            fig_mapa = px.scatter_mapbox(
+                df_mapa, lat="lat", lon="lon", hover_name="sensor",
+                hover_data={"estado": True, "delegacion": True, "valor": True, "lat": False, "lon": False},
+                color="estado", color_discrete_map=colores_estados,
+                zoom=10, center={"lat": 19.4326, "lon": -99.1332}, height=450,
+                title="Ubicación de Infraestructura en Falla / Normal"
+            )
+            fig_mapa.update_layout(mapbox_style="carto-positron", title_x=0.5, margin=dict(t=60, b=10, l=10, r=10))
+            html_mapa = fig_mapa.to_html(full_html=False, include_plotlyjs=False)
+        else:
+            html_mapa = "<div class='alert alert-warning text-center mt-4'>No hay coordenadas válidas para mostrar el mapa.</div>"
+
+        # 3. Resumen Ejecutivo
+        df['transmite'] = df['estado'].isin(['Operación Normal', 'SITIO EN 0', 'Alarma: Nivel Alto', 'Alarma: Nivel Bajo'])
         resumen = df.groupby('delegacion').agg(Total_Equipos=('sensor', 'count'), Transmitiendo=('transmite', 'sum')).reset_index()
         resumen['Sin_Transmision'] = resumen['Total_Equipos'] - resumen['Transmitiendo']
         resumen['Conectividad'] = (resumen['Transmitiendo'] / resumen['Total_Equipos'] * 100).round(1).astype(str) + '%'
-        
         tabla_resumen_html = resumen.rename(columns={'delegacion': 'Alcaldía', 'Total_Equipos': 'Total de Sitios', 'Transmitiendo': 'En Línea', 'Sin_Transmision': 'Desconectados', 'Conectividad': 'Nivel de Conectividad'}).to_html(classes='table table-bordered table-striped text-center align-middle', index=False)
 
-        df['ultima_conexion'] = pd.to_datetime(df['ultima_conexion']).dt.strftime('%Y-%m-%d %H:%M:%S').fillna('Sin registro')
-        tabla_detalle_html = df[['sensor', 'delegacion', 'valor', 'estado', 'historial_caidas', 'ultima_conexion']].to_html(classes='table table-striped table-hover table-bordered text-center align-middle', index=False, table_id="tabla_datos")
+        # 4. Detalle
+        df_vista = df.copy()
+        df_vista['ultima_conexion'] = pd.to_datetime(df_vista['ultima_conexion']).dt.strftime('%Y-%m-%d %H:%M:%S').fillna('Sin registro')
+        df_vista['rango'] = df_vista['min_val'].astype(str) + " a " + df_vista['max_val'].astype(str)
+        df_vista['coordenadas'] = df_vista['lat'].astype(str) + ", " + df_vista['lon'].astype(str)
+        
+        columnas_ordenadas = ['sensor', 'delegacion', 'coordenadas', 'valor', 'rango', 'historial_caidas', 'ultima_conexion', 'estado']
+        tabla_detalle_html = df_vista[columnas_ordenadas].to_html(classes='table table-striped table-hover table-bordered text-center align-middle', index=False, table_id="tabla_datos")
 
-        df_mapa = df[(df['lat'] != 0.0) & (df['lon'] != 0.0)]
-        fig_mapa = px.scatter_map(
-        df_mapa, lat="lat", lon="lon", hover_name="sensor",
-        hover_data={"estado": True, "delegacion": True, "valor": True, "lat": False, "lon": False},
-        color="estado", color_discrete_map=colores_estados,
-        zoom=10, center={"lat": 19.4326, "lon": -99.1332}, height=450,
-        title="Ubicación de Infraestructura"
-        )
-        fig_mapa.update_layout(map_style="carto-positron", title_x=0.5, margin=dict(t=60, b=10, l=10, r=10))
-        html_mapa = fig_mapa.to_html(full_html=False, include_plotlyjs=False) 
-    
         html_final = f"""
         <!DOCTYPE html>
-    <html lang="es">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Monitor SCADA</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <style>
-            body {{ background-color: #f4f6f9; padding: 20px; }}
-            .card {{ border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); padding: 20px; background: white; height: 100%; }}
-            .estado-normal {{ color: #155724; background-color: #d4edda; font-weight: bold; }}
-            .estado-sin-senal {{ color: #721c24; background-color: #f8d7da; font-weight: bold; }}
-            .estado-cero {{ color: #856404; background-color: #fff3cd; font-weight: bold; }}
-            .estado-desconexion {{ color: #fff; background-color: #6c757d; font-weight: bold; }}
-            .estado-nodato {{ color: #0c5460; background-color: #d1ecf1; font-weight: bold; }}
-            .estado-alto {{ color: #fff; background-color: #fd7e14; font-weight: bold; }}
-            .estado-bajo {{ color: #fff; background-color: #6f42c1; font-weight: bold; }}
-            
-            .estado-trancado {{ color: #fff; background-color: #e83e8c; font-weight: bold; }}
-            .estado-desactualizado {{ color: #fff; background-color: #856404; font-weight: bold; }} 
-            
-            .fila-oculta {{ display: none; }}
-            .header-resumen th {{ background-color: #0d6efd; color: white; }}
-        </style>
-    </head>
-    <body>
-        <div class="container-fluid">
-            <div class="card mb-4">
-                <h2 class="text-center text-primary">Monitoreo Operativo de D4 Segunda Parte</h2>
-                <h3 class="text-center text-secondary">Subdirección de Tecnología, Innovación y Datos</h3>
-                <h4 class="text-center text-secondary">JUD de Información</h4>
-                <p class="text-muted text-center mb-0">Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-            </div>
-            
-            <div class="row mb-4">
-                <div class="col-lg-5 mb-3 mb-lg-0">
-                    <div class="card">
-                        <p class="text-center text-muted small mb-0">Haga clic en una sección para filtrar la tabla detallada</p>
-                        {html_pastel}
-                    </div>
+        <html lang="es">
+        <head>
+            <meta charset="UTF-8">
+            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+            <style>
+                body {{ background-color: #f4f6f9; padding: 20px; }}
+                .card {{ border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); padding: 20px; background: white; }}
+                .estado-normal {{ color: #155724; background-color: #d4edda; font-weight: bold; }}
+                .estado-sin-senal {{ color: #721c24; background-color: #f8d7da; font-weight: bold; }}
+                .estado-trancado {{ color: #fff; background-color: #e83e8c; font-weight: bold; }}
+                .estado-desconexion {{ color: #fff; background-color: #6c757d; font-weight: bold; }}
+                .estado-cero {{ color: #856404; background-color: #fff3cd; font-weight: bold; }}
+                .estado-alto {{ color: #fff; background-color: #fd7e14; font-weight: bold; }}
+                .estado-bajo {{ color: #fff; background-color: #6f42c1; font-weight: bold; }}
+                .fila-oculta {{ display: none; }}
+                .header-resumen th {{ background-color: #0d6efd; color: white; }}
+            </style>
+        </head>
+        <body>
+            <div class="container-fluid">
+                <div class="card mb-4">
+                    <h2 class="text-center text-primary">Reporte de Transmisión SCADA</h2>
+                    <p class="text-muted text-center mb-0">Generado el: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
                 </div>
-                <div class="col-lg-7">
-                    <div class="card">
-                        {html_mapa}
-                    </div>
+                <div class="row mb-4">
+                    <div class="col-lg-5"><div class="card">{html_pastel}</div></div>
+                    <div class="col-lg-7"><div class="card">{html_mapa}</div></div>
+                </div>
+                <div class="card mb-4">
+                    <h4 class="mb-3 text-secondary">📊 Resumen Ejecutivo</h4>
+                    <div class="table-responsive header-resumen">{tabla_resumen_html}</div>
+                </div>
+                <div class="card">
+                    <h4>Desglose Detallado</h4>
+                    <div class="table-responsive">{tabla_detalle_html}</div>
                 </div>
             </div>
-            
-            <div class="card mb-4">
-                <h4 class="mb-3 text-secondary">📊 Resumen Ejecutivo por Alcaldía</h4>
-                <div class="table-responsive header-resumen">
-                    {tabla_resumen_html}
-                </div>
-            </div>
-
-            <div class="card">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h4 class="mb-0">Desglose Detallado de Dispositivos e Infraestructura <span id="texto_filtro" class="badge bg-info text-dark ms-2" style="display:none;"></span></h4>
-                    <button id="btn_reset" class="btn btn-sm btn-outline-secondary" style="display:none;" onclick="resetearFiltro()">Mostrar Todos</button>
-                </div>
-                <div class="table-responsive">
-                    {tabla_detalle_html}
-                </div>
-            </div>
-        </div>
-
-        <script>
-            document.querySelectorAll('#tabla_datos td').forEach(td => {{
-                if(td.textContent === 'Operación Normal') td.classList.add('estado-normal');
-                if(td.textContent === 'Sin Señal') td.classList.add('estado-sin-senal');
-                if(td.textContent === 'SITIO EN 0') td.classList.add('estado-cero');
-                if(td.textContent === 'DESCONEXION') td.classList.add('estado-desconexion');
-                if(td.textContent === 'NO HAY DATO') td.classList.add('estado-nodato');
-                if(td.textContent === 'Alarma: Nivel Alto') td.classList.add('estado-alto');
-                if(td.textContent === 'Alarma: Nivel Bajo') td.classList.add('estado-bajo');
-                
-                if(td.textContent === 'Dato Trancado') td.classList.add('estado-trancado');
-                if(td.textContent === 'Desactualizado') td.classList.add('estado-desactualizado');
-            }});
-
-            setTimeout(() => {{
-                const grafica = document.getElementById('grafica_plotly');
-                if(grafica) {{
-                    grafica.on('plotly_click', function(data) {{
-                        const estadoSeleccionado = data.points[0].label;
-                        const filas = document.querySelectorAll('#tabla_datos tbody tr');
-                        
-                        filas.forEach(fila => {{
-                            // ATENCIÓN: El índice cambió a 7 al agregar la columna de Eventos de Desconexión
-                            const celdaEstado = fila.querySelectorAll('td')[7]; 
-                            if(celdaEstado) {{
-                                if(celdaEstado.textContent === estadoSeleccionado) {{
-                                    fila.classList.remove('fila-oculta');
-                                }} else {{
-                                    fila.classList.add('fila-oculta');
-                                }}
-                            }}
-                        }});
-                        
-                        document.getElementById('btn_reset').style.display = 'inline-block';
-                        const badgeFiltro = document.getElementById('texto_filtro');
-                        badgeFiltro.textContent = "Filtrado por: " + estadoSeleccionado;
-                        badgeFiltro.style.display = 'inline-block';
-                    }});
-                }}
-            }}, 1000);
-
-            function resetearFiltro() {{
-                const filas = document.querySelectorAll('#tabla_datos tbody tr');
-                filas.forEach(fila => fila.classList.remove('fila-oculta'));
-                document.getElementById('btn_reset').style.display = 'none';
-                document.getElementById('texto_filtro').style.display = 'none';
-            }}
-        </script>
-    </body>
-    </html>
-    """
+            <script>
+                document.querySelectorAll('#tabla_datos td').forEach(td => {{
+                    if(td.textContent === 'Operación Normal') td.classList.add('estado-normal');
+                    if(td.textContent === 'Sin Señal') td.classList.add('estado-sin-senal');
+                    if(td.textContent === 'Dato Trancado') td.classList.add('estado-trancado');
+                    if(td.textContent === 'SITIO EN 0') td.classList.add('estado-cero');
+                    if(td.textContent === 'DESCONEXION') td.classList.add('estado-desconexion');
+                    if(td.textContent === 'Alarma: Nivel Alto') td.classList.add('estado-alto');
+                    if(td.textContent === 'Alarma: Nivel Bajo') td.classList.add('estado-bajo');
+                }});
+            </script>
+        </body>
+        </html>
+        """
         return html_final
 
     col_btn, _ = st.columns([1, 3])
@@ -389,12 +443,15 @@ if not df_datos.empty:
 
     if actualizar or 'df_scada' in st.session_state:
         if actualizar:
-            with st.spinner("Conectando con SCADA y compilando HTML..."):
-                datos_crudos = obtener_datos_scada()
+            with st.spinner("Conectando con servidores SCADA en tiempo real..."):
+                datos_crudos = obtener_datos_scada_reales()
                 if datos_crudos:
-                    st.session_state.df_scada = pd.DataFrame(datos_crudos)
+                    df_scada_procesado = procesar_logica_scada(datos_crudos)
+                    st.session_state.df_scada = df_scada_procesado
                     st.session_state.html_generado = generar_html_interactivo(st.session_state.df_scada)
-                    st.success("¡Datos extraídos y reporte compilado!")
+                    st.success("¡Análisis completado! Datos extraídos de la API.")
+                else:
+                    st.error("No se pudieron recuperar datos. Verifique la conexión de red o el archivo secrets.toml")
 
         if 'df_scada' in st.session_state and not st.session_state.df_scada.empty:
             df_scada = st.session_state.df_scada
@@ -403,9 +460,9 @@ if not df_datos.empty:
             with col_res_graf:
                 st.dataframe(df_scada['estado'].value_counts().reset_index(), hide_index=True, use_container_width=True)
             with col_res_tab:
-                st.dataframe(df_scada[['sensor', 'estado', 'valor']], hide_index=True, use_container_width=True)
+                st.dataframe(df_scada[['sensor', 'estado', 'valor', 'historial_caidas']], hide_index=True, use_container_width=True)
             
-    # --- BOTÓN DE DESCARGA HTML EN BARRA LATERAL ---
+            # --- BOTÓN DE DESCARGA HTML EN BARRA LATERAL ---
             if 'html_generado' in st.session_state:
                 st.sidebar.markdown("---")
                 st.sidebar.markdown("### 📥 Reportes y Descargas")
