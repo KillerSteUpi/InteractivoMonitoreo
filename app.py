@@ -254,50 +254,116 @@ if not df_datos.empty:
 
         html_final = f"""
         <!DOCTYPE html>
-        <html lang="es">
-        <head>
-            <meta charset="UTF-8">
-            <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-            <style>
-                body {{ background-color: #f4f6f9; padding: 20px; }}
-                .card {{ border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); padding: 20px; background: white; }}
-                .estado-normal {{ color: #155724; background-color: #d4edda; font-weight: bold; }}
-                .estado-sin-senal {{ color: #721c24; background-color: #f8d7da; font-weight: bold; }}
-                .estado-trancado {{ color: #fff; background-color: #e83e8c; font-weight: bold; }}
-                .fila-oculta {{ display: none; }}
-                .header-resumen th {{ background-color: #0d6efd; color: white; }}
-            </style>
-        </head>
-        <body>
-            <div class="container-fluid">
-                <div class="card mb-4">
-                    <h2 class="text-center text-primary">Monitoreo Operativo de Dispositivos</h2>
-                    <p class="text-muted text-center mb-0">Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                </div>
-                <div class="row mb-4">
-                    <div class="col-lg-5"><div class="card">{html_pastel}</div></div>
-                    <div class="col-lg-7">
-                        <div class="card">
-                            <h4 class="mb-3 text-secondary">📊 Resumen Ejecutivo</h4>
-                            <div class="table-responsive header-resumen">{tabla_resumen_html}</div>
-                        </div>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Monitor SCADA</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            body {{ background-color: #f4f6f9; padding: 20px; }}
+            .card {{ border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); padding: 20px; background: white; height: 100%; }}
+            .estado-normal {{ color: #155724; background-color: #d4edda; font-weight: bold; }}
+            .estado-sin-senal {{ color: #721c24; background-color: #f8d7da; font-weight: bold; }}
+            .estado-cero {{ color: #856404; background-color: #fff3cd; font-weight: bold; }}
+            .estado-desconexion {{ color: #fff; background-color: #6c757d; font-weight: bold; }}
+            .estado-nodato {{ color: #0c5460; background-color: #d1ecf1; font-weight: bold; }}
+            .estado-alto {{ color: #fff; background-color: #fd7e14; font-weight: bold; }}
+            .estado-bajo {{ color: #fff; background-color: #6f42c1; font-weight: bold; }}
+            
+            .estado-trancado {{ color: #fff; background-color: #e83e8c; font-weight: bold; }}
+            .estado-desactualizado {{ color: #fff; background-color: #856404; font-weight: bold; }} 
+            
+            .fila-oculta {{ display: none; }}
+            .header-resumen th {{ background-color: #0d6efd; color: white; }}
+        </style>
+    </head>
+    <body>
+        <div class="container-fluid">
+            <div class="card mb-4">
+                <h2 class="text-center text-primary">Monitoreo Operativo de D4 Segunda Parte</h2>
+                <h3 class="text-center text-secondary">Subdirección de Tecnología, Innovación y Datos</h3>
+                <h4 class="text-center text-secondary">JUD de Información</h4>
+                <p class="text-muted text-center mb-0">Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+            </div>
+            
+            <div class="row mb-4">
+                <div class="col-lg-5 mb-3 mb-lg-0">
+                    <div class="card">
+                        <p class="text-center text-muted small mb-0">Haga clic en una sección para filtrar la tabla detallada</p>
+                        {html_pastel}
                     </div>
                 </div>
-                <div class="card">
-                    <h4>Desglose Detallado</h4>
-                    <div class="table-responsive">{tabla_detalle_html}</div>
+            
+            <div class="card mb-4">
+                <h4 class="mb-3 text-secondary">📊 Resumen Ejecutivo por Alcaldía</h4>
+                <div class="table-responsive header-resumen">
+                    {tabla_resumen_html}
                 </div>
             </div>
-            <script>
-                document.querySelectorAll('#tabla_datos td').forEach(td => {{
-                    if(td.textContent === 'Operación Normal') td.classList.add('estado-normal');
-                    if(td.textContent === 'Sin Señal') td.classList.add('estado-sin-senal');
-                    if(td.textContent === 'Dato Trancado') td.classList.add('estado-trancado');
-                }});
-            </script>
-        </body>
-        </html>
-        """
+
+            <div class="card">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h4 class="mb-0">Desglose Detallado de Dispositivos e Infraestructura <span id="texto_filtro" class="badge bg-info text-dark ms-2" style="display:none;"></span></h4>
+                    <button id="btn_reset" class="btn btn-sm btn-outline-secondary" style="display:none;" onclick="resetearFiltro()">Mostrar Todos</button>
+                </div>
+                <div class="table-responsive">
+                    {tabla_detalle_html}
+                </div>
+            </div>
+        </div>
+
+        <script>
+            document.querySelectorAll('#tabla_datos td').forEach(td => {{
+                if(td.textContent === 'Operación Normal') td.classList.add('estado-normal');
+                if(td.textContent === 'Sin Señal') td.classList.add('estado-sin-senal');
+                if(td.textContent === 'SITIO EN 0') td.classList.add('estado-cero');
+                if(td.textContent === 'DESCONEXION') td.classList.add('estado-desconexion');
+                if(td.textContent === 'NO HAY DATO') td.classList.add('estado-nodato');
+                if(td.textContent === 'Alarma: Nivel Alto') td.classList.add('estado-alto');
+                if(td.textContent === 'Alarma: Nivel Bajo') td.classList.add('estado-bajo');
+                
+                if(td.textContent === 'Dato Trancado') td.classList.add('estado-trancado');
+                if(td.textContent === 'Desactualizado') td.classList.add('estado-desactualizado');
+            }});
+
+            setTimeout(() => {{
+                const grafica = document.getElementById('grafica_plotly');
+                if(grafica) {{
+                    grafica.on('plotly_click', function(data) {{
+                        const estadoSeleccionado = data.points[0].label;
+                        const filas = document.querySelectorAll('#tabla_datos tbody tr');
+                        
+                        filas.forEach(fila => {{
+                            // ATENCIÓN: El índice cambió a 7 al agregar la columna de Eventos de Desconexión
+                            const celdaEstado = fila.querySelectorAll('td')[7]; 
+                            if(celdaEstado) {{
+                                if(celdaEstado.textContent === estadoSeleccionado) {{
+                                    fila.classList.remove('fila-oculta');
+                                }} else {{
+                                    fila.classList.add('fila-oculta');
+                                }}
+                            }}
+                        }});
+                        
+                        document.getElementById('btn_reset').style.display = 'inline-block';
+                        const badgeFiltro = document.getElementById('texto_filtro');
+                        badgeFiltro.textContent = "Filtrado por: " + estadoSeleccionado;
+                        badgeFiltro.style.display = 'inline-block';
+                    }});
+                }}
+            }}, 1000);
+
+            function resetearFiltro() {{
+                const filas = document.querySelectorAll('#tabla_datos tbody tr');
+                filas.forEach(fila => fila.classList.remove('fila-oculta'));
+                document.getElementById('btn_reset').style.display = 'none';
+                document.getElementById('texto_filtro').style.display = 'none';
+            }}
+        </script>
+    </body>
+    </html>
+    """
         return html_final
 
     col_btn, _ = st.columns([1, 3])
