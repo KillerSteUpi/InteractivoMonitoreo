@@ -252,6 +252,17 @@ if not df_datos.empty:
         df['ultima_conexion'] = pd.to_datetime(df['ultima_conexion']).dt.strftime('%Y-%m-%d %H:%M:%S').fillna('Sin registro')
         tabla_detalle_html = df[['sensor', 'delegacion', 'valor', 'estado', 'historial_caidas', 'ultima_conexion']].to_html(classes='table table-striped table-hover table-bordered text-center align-middle', index=False, table_id="tabla_datos")
 
+        df_mapa = df[(df['lat'] != 0.0) & (df['lon'] != 0.0)]
+        fig_mapa = px.scatter_map(
+        df_mapa, lat="lat", lon="lon", hover_name="sensor",
+        hover_data={"estado": True, "delegacion": True, "valor": True, "lat": False, "lon": False},
+        color="estado", color_discrete_map=colores_estados,
+        zoom=10, center={"lat": 19.4326, "lon": -99.1332}, height=450,
+        title="Ubicación de Infraestructura"
+        )
+        fig_mapa.update_layout(map_style="carto-positron", title_x=0.5, margin=dict(t=60, b=10, l=10, r=10))
+        html_mapa = fig_mapa.to_html(full_html=False, include_plotlyjs=False) 
+    
         html_final = f"""
         <!DOCTYPE html>
     <html lang="es">
@@ -294,6 +305,12 @@ if not df_datos.empty:
                         {html_pastel}
                     </div>
                 </div>
+                <div class="col-lg-7">
+                    <div class="card">
+                        {html_mapa}
+                    </div>
+                </div>
+            </div>
             
             <div class="card mb-4">
                 <h4 class="mb-3 text-secondary">📊 Resumen Ejecutivo por Alcaldía</h4>
